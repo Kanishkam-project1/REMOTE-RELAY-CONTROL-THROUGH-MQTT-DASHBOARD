@@ -1,0 +1,41 @@
+# IoT-Based Emergency Alert and Remote Relay Control System
+
+Detect → Communicate → Monitor → Actuate → Record
+
+## Problem Statement
+Develop an ESP32 relay-control solution where commands are received
+through MQTT topics from a Node-RED dashboard, with real-time device status.
+
+## Features
+- Relay ON/OFF control from the Node-RED dashboard via MQTT
+- Real-time relay status and online/offline detection (MQTT Last Will)
+- Emergency button triggers the relay, buzzer and LEDs automatically
+- Mobile control with Blynk
+- Live graphs on ThingSpeak
+- Event logging to Google Sheets
+
+## Hardware (simulated in Wokwi)
+ESP32, emergency push button, relay module, buzzer, LEDs, resistors
+
+## Technologies
+Wokwi, MQTT, Node-RED, Blynk, ThingSpeak, Google Sheets
+
+## MQTT Topics
+| Topic | Direction | Purpose |
+|---|---|---|
+| esp32/relay/cmd | Dashboard → ESP32 | ON/OFF command |
+| esp32/relay/status | ESP32 → Dashboard | Actual relay state |
+| esp32/alert | ESP32 → Dashboard | Emergency alert |
+| esp32/online | ESP32 → Dashboard | Online/offline status |
+
+## How to Run
+1. Open the Wokwi project link: (add link)
+2. Import node-red/flows.json into Node-RED
+3. Add your own MQTT broker, Blynk and ThingSpeak credentials
+4. Start the simulation and open the dashboard
+
+## Screenshots
+(add block diagram and dashboard images from docs/)
+
+## Future Scope
+SMS notifications, GPS tracking, multi-node deployment, MQTT security, AI-based prediction
