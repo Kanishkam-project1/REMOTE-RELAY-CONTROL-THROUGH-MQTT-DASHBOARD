@@ -1,0 +1,547 @@
+ABSTRACT
+
+The Controlling devices remotely and knowing their real-time state is a common need in homes, hospitals, and industries. We present an ESP32-based relay-control system where commands are sent from a Node-RED dashboard through MQTT topics. The ESP32 subscribes to a command topic (e.g., esp32/relay/cmd), switches the relay accordingly, and publishes its state to a status topic (e.g., esp32/relay/status), so the dashboard always shows live relay status and device online/offline state. An emergency push button triggers an alert that automatically activates the relay, buzzer, and LEDs. The Blynk control, ThingSpeak provides live graphs, and Google Sheets logs every event with a timestamp. The system is built and validated in Wokwi.
+code
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <PubSubClient.h>
+
+// =====================================================
+// PIN DEFINITIONS
+// =====================================================
+
+#define BUTTON_PIN 27
+#define GREEN_LED 2
+#define RED_LED 4
+#define BUZZER 25
+#define RELAY 26
+
+// =====================================================
+// WIFI
+// =====================================================
+
+const char* WIFI_SSID = "Wokwi-GUEST";
+const char* WIFI_PASSWORD = "";
+
+// =====================================================
+// HIVEMQ CLOUD
+// =====================================================
+
+const char* MQTT_SERVER =
+  "5284a8a378de49b6b98846c51054822a.s1.eu.hivemq.cloud";
+
+const int MQTT_PORT = 8883;
+
+const char* MQTT_USERNAME = "ring01_user";
+const char* MQTT_PASSWORD = "Ring01@user";
+
+const char* MQTT_TOPIC = "emergency/ring01";
+
+// =====================================================
+// THINGSPEAK
+// =====================================================
+
+const char* THINGSPEAK_API_KEY =
+  "3IA8MF6XQZ987HZ4";
+
+const char* THINGSPEAK_URL =
+  "https://api.thingspeak.com/update";
+
+// =====================================================
+// MQTT OBJECTS
+// =====================================================
+
+WiFiClientSecure secureClient;
+PubSubClient mqttClient(secureClient);
+
+// =====================================================
+// EMERGENCY SETTINGS
+// =====================================================
+
+const unsigned long LONG_PRESS_TIME = 2000;
+const unsigned long CONFIRM_TIME = 10000;
+
+// =====================================================
+// VARIABLES
+// =====================================================
+
+int pressCount = 0;
+
+String emergencyType = "";
+
+unsigned long firstPressTime = 0;
+unsigned long buttonStartTime = 0;
+
+// =====================================================
+// CONNECT WIFI
+// =====================================================
+
+void connectWiFi() {
+
+  if (WiFi.status() == WL_CONNECTED) {
+    return;
+  }
+
+  Serial.println();
+  Serial.print("Connecting to WiFi");
+
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  while (WiFi.status() != WL_CONNECTED) {
+
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println();
+  Serial.println("WiFi Connected!");
+
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+}
+
+// =====================================================
+// CONNECT MQTT
+// =====================================================
+
+void connectMQTT() {
+
+  while (!mqttClient.connected()) {
+
+    Serial.print("Connecting to HiveMQ...");
+
+    String clientID = "RING01-ESP32-";
+    clientID += String(random(0xffff), HEX);
+
+    if (mqttClient.connect(
+          clientID.c_str(),
+          MQTT_USERNAME,
+          MQTT_PASSWORD)) {
+
+      Serial.println("CONNECTED!");
+
+      Serial.print("MQTT Topic: ");
+      Serial.println(MQTT_TOPIC);
+
+    } else {
+
+      Serial.print("FAILED, Error = ");
+      Serial.println(mqttClient.state());
+
+      Serial.println("Retrying in 3 seconds...");
+
+      delay(3000);
+    }
+  }
+}
+
+// =====================================================
+// SEND DATA TO THINGSPEAK
+// =====================================================
+
+void sendToThingSpeak(String type, int level) {
+
+  if (WiFi.status() != WL_CONNECTED) {
+
+    Serial.println("WiFi not connected.");
+    return;
+  }
+
+  HTTPClient http;
+
+  String alertType;
+
+  if (type == "WEARER") {
+
+    alertType = "WEARER";
+
+  } else {
+
+    alertType = "NEARBY_PERSON";
+  }
+
+  // ThingSpeak fields
+  //
+  // Field 1 = Emergency Level
+  // Field 2 = Alert Type
+  // Field 3 = Ring ID
+  // Field 4 = Location
+
+  String url = String(THINGSPEAK_URL) +
+               "?api_key=" + THINGSPEAK_API_KEY +
+               "&field1=" + String(level) +
+               "&field2=" + alertType +
+               "&field3=R001" +
+               "&field4=Mall";
+
+  Serial.println();
+  Serial.println("Sending data to ThingSpeak...");
+
+  http.begin(url);
+
+  int httpCode = http.GET();
+
+  if (httpCode > 0) {
+
+    Serial.print("ThingSpeak HTTP Code: ");
+    Serial.println(httpCode);
+
+    String response = http.getString();
+
+    Serial.print("ThingSpeak Response: ");
+    Serial.println(response);
+
+    if (response != "0") {
+
+      Serial.println("ThingSpeak update SUCCESS!");
+
+    } else {
+
+      Serial.println("ThingSpeak update FAILED!");
+    }
+
+  } else {
+
+    Serial.print("ThingSpeak Error: ");
+    Serial.println(http.errorToString(httpCode));
+  }
+
+  http.end();
+}
+
+// =====================================================
+// PUBLISH MQTT MESSAGE
+// =====================================================
+
+void publishEmergency(String type, int level) {
+
+  String message;
+
+  if (type == "WEARER") {
+
+    message =
+      "{\"ring_id\":\"R001\","
+      "\"alert_type\":\"WEARER_EMERGENCY\","
+      "\"level\":" + String(level) +
+      ",\"location\":\"Mall\"}";
+
+  } else {
+
+    message =
+      "{\"ring_id\":\"R001\","
+      "\"alert_type\":\"NEARBY_PERSON_EMERGENCY\","
+      "\"level\":" + String(level) +
+      ",\"location\":\"Mall\"}";
+  }
+
+  Serial.println();
+  Serial.println("Publishing MQTT message:");
+  Serial.println(message);
+
+  if (mqttClient.publish(
+        MQTT_TOPIC,
+        message.c_str())) {
+
+    Serial.println(
+      "MQTT MESSAGE SENT SUCCESSFULLY!");
+
+  } else {
+
+    Serial.println(
+      "MQTT MESSAGE FAILED!");
+  }
+
+  // Also send to ThingSpeak
+  sendToThingSpeak(type, level);
+}
+
+// =====================================================
+// SETUP
+// =====================================================
+
+void setup() {
+
+  Serial.begin(115200);
+
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(RED_LED, OUTPUT);
+  pinMode(BUZZER, OUTPUT);
+  pinMode(RELAY, OUTPUT);
+
+  // Initial state
+
+  digitalWrite(GREEN_LED, HIGH);
+  digitalWrite(RED_LED, LOW);
+  digitalWrite(BUZZER, LOW);
+  digitalWrite(RELAY, LOW);
+
+  Serial.println();
+  Serial.println("================================");
+  Serial.println(" SMART RING EMERGENCY SYSTEM");
+  Serial.println("================================");
+
+  connectWiFi();
+
+  // Wokwi simulation
+  // Certificate verification disabled
+  secureClient.setInsecure();
+
+  mqttClient.setServer(
+    MQTT_SERVER,
+    MQTT_PORT
+  );
+
+  mqttClient.setKeepAlive(60);
+  mqttClient.setBufferSize(512);
+
+  connectMQTT();
+
+  Serial.println();
+  Serial.println("System Ready");
+  Serial.println("-------------------------------");
+  Serial.println("Short Press -> Nearby Person");
+  Serial.println("Long Press  -> Wearer");
+  Serial.println("-------------------------------");
+}
+
+// =====================================================
+// MAIN LOOP
+// =====================================================
+
+void loop() {
+
+  // Maintain MQTT connection
+
+  if (!mqttClient.connected()) {
+
+    connectMQTT();
+  }
+
+  mqttClient.loop();
+
+  // ===================================================
+  // BUTTON PRESSED
+  // ===================================================
+
+  if (digitalRead(BUTTON_PIN) == LOW) {
+
+    buttonStartTime = millis();
+
+    // Wait until button released
+
+    while (digitalRead(BUTTON_PIN) == LOW) {
+
+      mqttClient.loop();
+      delay(10);
+    }
+
+    unsigned long pressDuration =
+      millis() - buttonStartTime;
+
+    Serial.println();
+    Serial.print("Button Press Duration: ");
+    Serial.print(pressDuration);
+    Serial.println(" ms");
+
+    // =================================================
+    // DETERMINE EMERGENCY TYPE
+    // =================================================
+
+    String newEmergencyType;
+
+    if (pressDuration >= LONG_PRESS_TIME) {
+
+      newEmergencyType = "WEARER";
+
+      Serial.println(
+        "Emergency Type: WEARER");
+
+      Serial.println(
+        "Wearer reports own emergency");
+
+    } else {
+
+      newEmergencyType = "NEARBY_PERSON";
+
+      Serial.println(
+        "Emergency Type: NEARBY_PERSON");
+
+      Serial.println(
+        "Nearby person needs help");
+    }
+
+    // =================================================
+    // FIRST PRESS
+    // =================================================
+
+    if (pressCount == 0) {
+
+      pressCount = 1;
+
+      emergencyType = newEmergencyType;
+
+      firstPressTime = millis();
+
+      Serial.println("--------------------------------");
+      Serial.println(
+        "LEVEL 1 - POSSIBLE EMERGENCY");
+      Serial.println("--------------------------------");
+
+      digitalWrite(GREEN_LED, LOW);
+      digitalWrite(RED_LED, HIGH);
+
+      // Short beep
+
+      digitalWrite(BUZZER, HIGH);
+
+      delay(500);
+
+      digitalWrite(BUZZER, LOW);
+
+      // MQTT + ThingSpeak
+
+      publishEmergency(
+        emergencyType,
+        1
+      );
+
+      Serial.println();
+      Serial.println(
+        "Waiting for confirmation...");
+
+      Serial.println(
+        "Press again within 10 seconds.");
+    }
+
+    // =================================================
+    // SECOND PRESS
+    // =================================================
+
+    else if (pressCount == 1) {
+
+      if (newEmergencyType == emergencyType) {
+
+        pressCount = 2;
+
+        Serial.println("--------------------------------");
+        Serial.println(
+          "LEVEL 2 - CONFIRMED EMERGENCY");
+        Serial.println("--------------------------------");
+
+        digitalWrite(RED_LED, HIGH);
+
+        digitalWrite(BUZZER, HIGH);
+
+        digitalWrite(RELAY, HIGH);
+
+        Serial.println("Alarm: ON");
+        Serial.println("Relay: ON");
+
+        // MQTT + ThingSpeak
+
+        publishEmergency(
+          emergencyType,
+          2
+        );
+
+        // =================================================
+        // ACTION
+        // =================================================
+
+        if (emergencyType == "WEARER") {
+
+          Serial.println();
+          Serial.println("ACTION:");
+
+          Serial.println(
+            "Notify Family Contact 1");
+
+          Serial.println(
+            "Notify Family Contact 2");
+
+          Serial.println(
+            "Notify Family Contact 3");
+
+        } else {
+
+          Serial.println();
+          Serial.println("ACTION:");
+
+          Serial.println(
+            "Notify Mall Control Centre");
+
+          Serial.println(
+            "Activate Control Centre Alarm");
+        }
+
+        // Buzzer
+
+        delay(2000);
+
+        digitalWrite(BUZZER, LOW);
+
+        Serial.println();
+        Serial.println(
+          "Emergency confirmed.");
+
+        Serial.println(
+          "Relay remains ON.");
+
+        pressCount = 0;
+
+      } else {
+
+        Serial.println();
+        Serial.println(
+          "Different emergency type detected.");
+
+        Serial.println(
+          "Confirmation not accepted.");
+
+        pressCount = 0;
+
+        digitalWrite(GREEN_LED, HIGH);
+        digitalWrite(RED_LED, LOW);
+        digitalWrite(BUZZER, LOW);
+        digitalWrite(RELAY, LOW);
+
+        Serial.println("System Ready.");
+      }
+    }
+
+    delay(300);
+  }
+
+  // ===================================================
+  // 10 SECOND TIMEOUT
+  // ===================================================
+
+  if (pressCount == 1 &&
+      millis() - firstPressTime >
+      CONFIRM_TIME) {
+
+    Serial.println();
+    Serial.println("--------------------------------");
+    Serial.println(
+      "Confirmation Timeout");
+
+    Serial.println(
+      "Emergency not confirmed");
+
+    Serial.println("--------------------------------");
+
+    pressCount = 0;
+
+    digitalWrite(GREEN_LED, HIGH);
+    digitalWrite(RED_LED, LOW);
+    digitalWrite(BUZZER, LOW);
+    digitalWrite(RELAY, LOW);
+
+    Serial.println("System Ready.");
+  }
+}
+
+block diagram 
